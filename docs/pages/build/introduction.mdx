@@ -1,168 +1,336 @@
----
-title: EAS Build
-sidebar_title: Introduction
-description: EAS Build is a hosted service for building app binaries for your Expo and React Native projects.
----
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { StatusBar } from 'expo-status-bar';
 
-import { Cube01Icon } from '@expo/styleguide-icons/outline/Cube01Icon';
+// ---- Theme ----------------------------------------------------------------
 
-import { BoxLink } from '~/ui/components/BoxLink';
-import { Collapsible } from '~/ui/components/Collapsible';
-import { NoIcon, YesIcon } from '~/ui/components/DocIcons';
-import { FAQ } from '~/ui/components/FAQ';
-import { RelatedSkills } from '~/ui/components/RelatedSkills';
-import { Terminal } from '~/ui/components/Snippet';
+// Paper-planner palette: warm stock, ink text, one pine accent.
+const colors = {
+  paper: '#F5F0E6',
+  card: '#FBF8F1',
+  rule: '#DDD5C4',
+  ink: '#1E2822',
+  muted: '#7D7767',
+  pine: '#2F5D50',
+  pineSoft: '#D9E6DF',
+  clay: '#B5573B',
+};
 
-**EAS Build** is a hosted Expo Application Services (EAS) service that builds app binaries (also called [standalone apps](/more/glossary-of-terms/#standalone-app)) for your Expo and React Native projects.
+// Serif for the date heading; system sans for everything else.
+const fonts = {
+  display: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
+  body: Platform.select({ ios: 'System', android: 'sans-serif', default: 'sans-serif' }),
+};
 
-EAS Build makes building your apps for distribution simple and easy to automate by providing defaults that work well for Expo and React Native projects out of the box, and by handling your app signing credentials for you (if you wish). It also makes sharing builds with your team easier than ever with [internal distribution](/build/internal-distribution/) (using [ad hoc](/build/internal-distribution/) and/or enterprise "universal" provisioning), deeply integrates with EAS Submit for app store submissions, and has first-class support for the [`expo-updates`](/build/updates/) library.
+const space = { xs: 6, sm: 10, md: 16, lg: 24 };
+const radius = 10;
 
-EAS Build is also designed to work for any native project, whether or not you use Expo and React Native. It's the fastest way to get from `npx create-expo-app` or `npx @react-native-community/cli@latest init` to app stores.
+// ---- App ------------------------------------------------------------------
 
-## Quick start
+const STORAGE_KEY = 'planner.tasks.v1';
 
-> **info** The `eas` commands below require EAS CLI. See [How to install EAS CLI](/eas/cli/#installation) for more information.
+// Each task lives in one of three "when" buckets until it is marked done.
+const WHEN = [
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'This week' },
+  { key: 'later', label: 'Later' },
+];
 
-To build your app, run the following command:
+const TABS = [...WHEN, { key: 'done', label: 'Done' }];
 
-<Terminal cmd={['$ eas build --platform all']} />
+const emptyMessages = {
+  today: 'Nothing planned for today. Add one below.',
+  week: 'Nothing lined up for this week yet.',
+  later: 'No longer-term items. Park ideas here.',
+  done: 'Completed tasks show up here.',
+};
 
-This command sends your project to EAS Build and produces installable binaries for Android and iOS. You can also build for one platform at a time by passing in `--platform android` or `--platform ios` as desired. For complete setup instructions, see [Create your first build](/build/setup/).
+export default function App() {
+  const [tasks, setTasks] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState('today');
+  const [draft, setDraft] = useState('');
+  const [when, setWhen] = useState('today');
 
-### Expo Skills for AI agents
+  // Load once on launch.
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((raw) => {
+        if (raw) setTasks(JSON.parse(raw));
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, []);
 
-If you use an AI agent, install [Expo Skills](/skills/) to teach it how to create production builds and ship them to the app stores:
+  // Save on every change, but never before the initial load finishes.
+  useEffect(() => {
+    if (!loaded) return;
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)).catch(() => {});
+  }, [tasks, loaded]);
 
-<RelatedSkills names={['eas-app-stores']} />
+  const counts = useMemo(() => {
+    const result = { today: 0, week: 0, later: 0, done: 0 };
+    for (const t of tasks) {
+      if (t.done) result.done += 1;
+      else result[t.when] += 1;
+    }
+    return result;
+  }, [tasks]);
 
-## Key features
+  const visible = useMemo(
+    () =>
+      tasks
+        .filter((t) => (tab === 'done' ? t.done : !t.done && t.when === tab))
+        .sort((a, b) => a.createdAt - b.createdAt),
+    [tasks, tab]
+  );
 
-- Cloud builds for Android and iOS with consistent environments
-- Automatically provision and manage app signing credentials or use your own
-- Share [internal distribution](/build/internal-distribution/) builds with a URL
-- Automate builds with [build profiles](/build/eas-json/#build-profiles) in **eas.json** (named sets of build settings) and integrations with [EAS Workflows](/eas/workflows/get-started/) or [CI pipelines](/build/building-on-ci/)
-- Auto-submit successful builds to app stores via [`--auto-submit`](/build/automate-submissions/) and EAS Submit
-- First-class [`expo-updates` integration](/build/updates/) with per-profile channels and [runtime version](/eas-update/runtime-versions/) guidance
-- Reuse [development builds](/develop/development-builds/introduction/) across your team. When two team members run `eas build:dev` and the project fingerprint matches, the existing build is downloaded from EAS instead of creating a new one
-- Faster builds via [dependency caching and custom cache paths](/build-reference/caching/)
-- Install builds and updates on devices with [Expo Orbit](https://expo.dev/orbit)
+  const addTask = () => {
+    const title = draft.trim();
+    if (!title) return;
+    const now = Date.now();
+    setTasks((prev) => [
+      ...prev,
+      { id: String(now), title, when, done: false, createdAt: now },
+    ]);
+    setDraft('');
+  };
 
-## When to use EAS Build
+  const toggle = (id) =>
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
 
-| Scenario                                                                             | Recommendation |
-| ------------------------------------------------------------------------------------ | -------------- |
-| Build production-ready binaries for app stores                                       | <YesIcon />    |
-| Share builds with testers via [internal distribution](/build/internal-distribution/) | <YesIcon />    |
-| Consistent builds across team members without local environment setup                | <YesIcon />    |
-| Automate builds from CI or [EAS Workflows](/eas/workflows/get-started/)              | <YesIcon />    |
-| Managed app signing credentials                                                      | <YesIcon />    |
-| Debugging native code locally                                                        | <NoIcon />     |
+  const confirmRemove = (task) =>
+    Alert.alert('Delete this task?', task.title, [
+      { text: 'Keep it', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => setTasks((prev) => prev.filter((t) => t.id !== task.id)),
+      },
+    ]);
 
-## Frequently asked questions
+  const dateLine = new Date().toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
 
-<FAQ>
+  const renderTask = ({ item }) => (
+    <Pressable
+      onPress={() => toggle(item.id)}
+      onLongPress={() => confirmRemove(item)}
+      delayLongPress={350}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: item.done }}
+      accessibilityLabel={item.title}
+      accessibilityHint="Double tap to toggle. Long press to delete."
+    >
+      <View style={[styles.check, item.done && styles.checkDone]}>
+        {item.done ? <Text style={styles.checkMark}>✓</Text> : null}
+      </View>
+      <Text style={[styles.rowText, item.done && styles.rowTextDone]}>{item.title}</Text>
+    </Pressable>
+  );
 
-<Collapsible summary="How do I share builds with my team before submitting to app stores?">
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar style="dark" />
 
-Use [internal distribution](/build/internal-distribution/) to share builds with a URL. Set `"distribution": "internal"` in your [build profile](/build/eas-json/#build-profiles) in **eas.json** to generate installable Android Package (APK) files for Android or [ad hoc builds](/build/internal-distribution/) for iOS.
+      <View style={styles.header}>
+        <Text style={styles.date}>{dateLine}</Text>
+        <Text style={styles.summary}>
+          {counts.today} open today · {counts.week} this week · {counts.later} later
+        </Text>
+      </View>
 
-</Collapsible>
+      <View style={styles.tabs}>
+        {TABS.map((t) => {
+          const active = tab === t.key;
+          const n = counts[t.key];
+          return (
+            <Pressable
+              key={t.key}
+              onPress={() => setTab(t.key)}
+              style={[styles.tab, active && styles.tabActive]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={[styles.tabText, active && styles.tabTextActive]}>
+                {t.label}
+                {n > 0 ? ` ${n}` : ''}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
 
-<Collapsible summary="Can I use EAS Build with existing React Native projects?">
+      <FlatList
+        data={visible}
+        keyExtractor={(t) => t.id}
+        renderItem={renderTask}
+        contentContainerStyle={visible.length ? styles.listContent : styles.emptyContainer}
+        ListEmptyComponent={
+          loaded ? <Text style={styles.empty}>{emptyMessages[tab]}</Text> : null
+        }
+      />
 
-Yes. EAS Build works with existing React Native projects created with `npx react-native init` or similar tools. See [Overview of using Expo with existing React Native apps](/bare/overview/) for more information.
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.composer}
+      >
+        <View style={styles.whenRow}>
+          {WHEN.map((w) => {
+            const active = when === w.key;
+            return (
+              <Pressable
+                key={w.key}
+                onPress={() => setWhen(w.key)}
+                style={[styles.chip, active && styles.chipActive]}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
+              >
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{w.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <View style={styles.inputRow}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            onSubmitEditing={addTask}
+            placeholder="What needs doing?"
+            placeholderTextColor={colors.muted}
+            style={styles.input}
+            returnKeyType="done"
+            accessibilityLabel="New task"
+          />
+          <Pressable
+            onPress={addTask}
+            disabled={!draft.trim()}
+            style={[styles.addButton, !draft.trim() && styles.addButtonDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel="Add task"
+          >
+            <Text style={styles.addText}>Add</Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
 
-</Collapsible>
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.paper },
+  header: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm },
+  date: { fontFamily: fonts.display, fontSize: 30, color: colors.ink, letterSpacing: -0.3 },
+  summary: { fontFamily: fonts.body, fontSize: 14, color: colors.muted, marginTop: space.xs },
 
-<Collapsible summary="Does EAS Build handle app signing credentials?">
+  tabs: {
+    flexDirection: 'row',
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.rule,
+  },
+  tab: { paddingVertical: space.sm, paddingHorizontal: space.sm, marginRight: space.xs },
+  tabActive: { borderBottomWidth: 2, borderBottomColor: colors.pine, marginBottom: -StyleSheet.hairlineWidth },
+  tabText: { fontFamily: fonts.body, fontSize: 14, color: colors.muted },
+  tabTextActive: { color: colors.pine, fontWeight: '600' },
 
-Yes. EAS Build can generate and manage Android [keystores](/app-signing/app-credentials/#android), iOS [provisioning profiles](/app-signing/app-credentials/#ios) and [distribution certificates](/app-signing/app-credentials/#ios), or use credentials you provide. See [App signing credentials](/app-signing/app-credentials/) for more information.
+  listContent: { paddingHorizontal: space.md, paddingTop: space.sm, paddingBottom: space.md },
+  emptyContainer: { flexGrow: 1, justifyContent: 'center', padding: space.lg },
+  empty: {
+    fontFamily: fonts.display,
+    fontStyle: 'italic',
+    fontSize: 17,
+    color: colors.muted,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
 
-</Collapsible>
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderRadius: radius,
+    paddingVertical: space.md,
+    paddingHorizontal: space.md,
+    marginBottom: space.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.rule,
+  },
+  rowPressed: { opacity: 0.7 },
+  check: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: colors.pine,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: space.md,
+  },
+  checkDone: { backgroundColor: colors.pine },
+  checkMark: { color: colors.card, fontSize: 13, fontWeight: '700' },
+  rowText: { flex: 1, fontFamily: fonts.body, fontSize: 16, color: colors.ink },
+  rowTextDone: { color: colors.muted, textDecorationLine: 'line-through' },
 
-<Collapsible summary="Can I run builds locally instead of in the cloud?">
+  composer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.rule,
+    backgroundColor: colors.card,
+    paddingHorizontal: space.md,
+    paddingTop: space.sm,
+    paddingBottom: space.md,
+  },
+  whenRow: { flexDirection: 'row', marginBottom: space.sm },
+  chip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.rule,
+    marginRight: space.xs,
+  },
+  chipActive: { backgroundColor: colors.pineSoft, borderColor: colors.pine },
+  chipText: { fontFamily: fonts.body, fontSize: 13, color: colors.muted },
+  chipTextActive: { color: colors.pine, fontWeight: '600' },
 
-Yes. Use [local builds](/build-reference/local-builds/) with `eas build --local` to run builds on your machine. This is useful for debugging or for security policies that require local builds.
-
-</Collapsible>
-
-<Collapsible summary="Can I use EAS Build with EAS Workflows or CI pipelines?">
-
-Yes. EAS Build integrates with [EAS Workflows](/eas/workflows/get-started/) using the `build` job type. Add a build job to your workflow configuration, for example:
-
-```yaml
-jobs:
-  build_ios:
-    type: build
-    params:
-      platform: ios
-```
-
-The build job supports builds for both platforms or conditional builds based on the branch:
-
-```yaml
-jobs:
-  build:
-    type: build
-    params:
-      platform: all
-      profile: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
-```
-
-For more information and other usage examples, see the [EAS Workflows build job](/eas/workflows/pre-packaged-jobs#build).
-
-EAS Build supports [builds from GitHub](/build/building-from-github/) and [building on CI](/build/building-on-ci/) with any provider.
-
-</Collapsible>
-
-<Collapsible summary="What build server infrastructure does EAS Build use?">
-
-Android builds run on Linux runners hosted in Google Cloud Platform, and iOS builds run on macOS runners hosted in Expo's macOS cloud. See [Build server infrastructure](/build-reference/infrastructure/).
-
-</Collapsible>
-
-</FAQ>
-
-## Get started
-
-<BoxLink
-  title="Create your first build"
-  description="It should only take a few minutes in total to get up and running for iOS and/or Android."
-  href="/build/setup"
-  Icon={Cube01Icon}
-/>
-
-<BoxLink
-  title="Share your apps with internal testers"
-  description="EAS Build can help share preview builds of your app with a single URL."
-  href="/build/internal-distribution"
-  Icon={Cube01Icon}
-/>
-
-<BoxLink
-  title="Automate submissions"
-  description="Learn how EAS Build can take your successful builds and handle uploading them to app stores automatically."
-  href="/build/automate-submissions"
-  Icon={Cube01Icon}
-/>
-
-<BoxLink
-  title="App version management"
-  description="Automate version bumps so you never have to think about them again."
-  href="/build-reference/app-versions"
-  Icon={Cube01Icon}
-/>
-
-<BoxLink
-  title="Run builds locally or on your own infrastructure"
-  description="EAS Build is a hosted service, and it can also run on your own machine, for example, to debug or to comply with company security policies."
-  href="/build-reference/local-builds"
-  Icon={Cube01Icon}
-/>
-
-<BoxLink
-  title="Limitations"
-  description="EAS Build is new and rapidly evolving, so we recommend getting familiar with the current limitations."
-  href="/build-reference/limitations"
-  Icon={Cube01Icon}
-/>
+  inputRow: { flexDirection: 'row', alignItems: 'center' },
+  input: {
+    flex: 1,
+    height: 46,
+    paddingHorizontal: space.md,
+    borderRadius: radius,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.rule,
+    backgroundColor: colors.paper,
+    fontFamily: fonts.body,
+    fontSize: 16,
+    color: colors.ink,
+  },
+  addButton: {
+    height: 46,
+    paddingHorizontal: space.md,
+    marginLeft: space.sm,
+    borderRadius: radius,
+    backgroundColor: colors.pine,
+    justifyContent: 'center',
+  },
+  addButtonDisabled: { opacity: 0.4 },
+  addText: { color: colors.card, fontSize: 16, fontWeight: '600' },
+});
